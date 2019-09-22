@@ -6,6 +6,30 @@ use rand::Rng;
 use minifb::{WindowOptions, Window, Scale, Key};
 use font::FONT_MAP;
 
+enum ProgramCounter {
+  Next,
+  Skip,
+  Jump(usize)
+}
+
+impl ProgramCounter {
+  fn skip_if(condition: bool) -> Self {
+    if condition {
+      ProgramCounter::Skip
+    } else {
+      ProgramCounter::Next
+    }
+  }
+
+  fn get_next_pc(&self, current_pc: usize) -> usize {
+    match self {
+      ProgramCounter::Next => current_pc + 2,
+      ProgramCounter::Skip => current_pc + 4,
+      ProgramCounter::Jump(addr) => *addr
+    }
+  }
+}
+
 // Programs are stored from 0x200 to 0xFFF
 const MEMORY_SIZE: usize = 4096;
 const SCREEN_WIDTH: usize = 64;
@@ -91,96 +115,74 @@ impl Sjip8 {
       (op & 0x000f)
     );
 
-    let nnn = op & 0x0fff;
+    let nnn = (op & 0x0fff) as usize;
     let x = nibbles.1 as usize;
     let y = nibbles.2 as usize;
     let n = nibbles.3 as usize;
     let kk = (op & 0x00ff) as u8;
 
-    let next_pc = match nibbles {
+    let pc_step = match nibbles {
       (0x00, 0x00, 0x0e, 0x00) => {
         self.vram = [0; SCREEN_WIDTH * SCREEN_HEIGHT];
-        self.pc + 2
+        ProgramCounter::Next
       },
       (0x00, 0x00, 0x0e, 0x0e) => {
         // Return
         let addr = self.stack[self.sp];
         self.sp = self.sp - 1;
 
-        addr as usize
+        ProgramCounter::Jump(addr as usize)
       },
-      (0x00, _, _, _) => self.pc + 2,
-      (0x01, _, _, _) => {
-        dbg!(nnn);
-        // Jump to nnn
-        nnn as usize
-      },
+      (0x00, _, _, _) => ProgramCounter::Next,
+      (0x01, _, _, _) => ProgramCounter::Jump(nnn),
       (0x02, _, _, _) => {
         // Call nnn
         self.sp = self.sp + 1;
         self.stack[self.sp] = self.pc as u16 + 2;
 
-        nnn as usize
+        ProgramCounter::Jump(nnn)
       },
       (0x03, _, _, _) => {
         // Skip if Vx == kk
-        if self.registers[x] == kk {
-          self.pc + 4
-        } else {
-          self.pc + 2
-        }
+        ProgramCounter::skip_if(self.registers[x] == kk)
       },
       (0x04, _, _, _) => {
         // Skip if Vx != kk
-        if self.registers[x] != kk {
-          self.pc + 4
-        } else {
-          self.pc + 2
-        }
+        ProgramCounter::skip_if(self.registers[x] != kk)
       },
       (0x05, _, _, 0x00) => {
         // Skip if Vx == Vy
-        if self.registers[x] == self.registers[y] {
-          self.pc + 4
-        } else {
-          self.pc + 2
-        }
+        ProgramCounter::skip_if(self.registers[x] == self.registers[y])
       },
       (0x06, _, _, _) => {
         // Set Vx = kk
         self.registers[x] = kk;
-
-        self.pc + 2
+        ProgramCounter::Next
       },
       (0x07, _, _, _) => {
         // Set Vx = Vx + kk
         self.registers[x] = self.registers[x].wrapping_add(kk);
-
-        self.pc + 2
+        ProgramCounter::Next
       },
       (0x08, _, _, 0x00) => {
         // Set Vx = Vy
         self.registers[x] = self.registers[y];
-
-        self.pc + 2
+        ProgramCounter::Next
       },
       (0x08, _, _, 0x01) => {
         // Set Vx = Vx | Vy
         self.registers[x] = self.registers[x] | self.registers[y];
-
-        self.pc + 2
+        ProgramCounter::Next
       },
       (0x08, _, _, 0x02) => {
         // Set Vx = Vx & Vy
         self.registers[x] = self.registers[x] & self.registers[y];
-
-        self.pc + 2
+        ProgramCounter::Next
       },
       (0x08, _, _, 0x03) => {
         // Set Vx = Vx ^ Vy
         self.registers[x] = self.registers[x] ^ self.registers[y];
-
-        self.pc + 2
+        ProgramCounter::Next
       },
       (0x08, _, _, 0x04) => {
         // Set Vx = Vx + Vy, VF = carry
@@ -193,7 +195,7 @@ impl Sjip8 {
           0
         };
 
-        self.pc + 2
+        ProgramCounter::Next
       },
       (0x08, _, _, 0x05) => {
         // Set Vx = Vx - Vy, VF = NOT borrow
@@ -207,13 +209,13 @@ impl Sjip8 {
         };
         self.registers[x] = vx.wrapping_sub(vy);
 
-        self.pc + 2
+        ProgramCounter::Next
       },
       (0x08, _, _, 0x06) => {
         // Set Vx = Vx >> 1
         self.registers[15] = self.registers[x] & 1;
         self.registers[x] = self.registers[x] >> 1;
-        self.pc + 2
+        ProgramCounter::Next
       },
       (0x08, _, _, 0x07) => {
         // Set Vx = Vy - Vx, VF = NOT borrow
@@ -227,38 +229,33 @@ impl Sjip8 {
         };
         self.registers[x] = vy.wrapping_sub(vx);
 
-        self.pc + 2
+        ProgramCounter::Next
       },
       (0x08, _, _, 0x0e) => {
         // Set Vx = Vx << 1
         self.registers[15] = (self.registers[x] & 0b10000000) >> 7;
         self.registers[x] = self.registers[x] << 1;
-        self.pc + 2
+        ProgramCounter::Next
       },
       (0x09, _, _, 0x00) => {
         // Skip if Vx != Vy
-        if self.registers[x] != self.registers[y] {
-          self.pc + 4
-        } else {
-          self.pc + 2
-        }
+        ProgramCounter::skip_if(self.registers[x] != self.registers[y])
       },
       (0x0a, _, _, _) => {
         // Set I = nnn
         self.reg_i = nnn as usize;
-
-        self.pc + 2
+        ProgramCounter::Next
       },
       (0x0b, _, _, _) => {
         // Jump to nnn + V0
-        (nnn + self.registers[0] as u16) as usize
+        ProgramCounter::Jump(nnn + self.registers[0] as usize)
       },
       (0x0c, _, _, _) => {
         // Set Vx = random byte & kk + V0
         let byte = rand::thread_rng().gen::<u8>();
         self.registers[x] = (byte & kk).wrapping_add(self.registers[0]);
 
-        self.pc + 2
+        ProgramCounter::Next
       },
       (0x0d, _, _, _) => {
         // Display sprite of size n from memory starting at I
@@ -277,81 +274,69 @@ impl Sjip8 {
           }
         }
 
-        self.pc + 2
+        ProgramCounter::Next
       },
       (0x0e, _, 0x09, 0x0e) => {
         // Skip if button in Vx is pressed
-        if self.keys[self.registers[x] as usize] {
-          self.pc + 4
-        } else {
-          self.pc + 2
-        }
+        ProgramCounter::skip_if(self.keys[self.registers[x] as usize])
       },
       (0x0e, _, 0x0a, 0x01) => {
         // Skip if button in Vx is not pressed
-        if !self.keys[self.registers[x] as usize] {
-          self.pc + 4
-        } else {
-          self.pc + 2
-        }
+        ProgramCounter::skip_if(!self.keys[self.registers[x] as usize])
       },
       (0x0f, _, 0x00, 0x07) => {
         // Set Vx = DT
         self.registers[x] = self.reg_dt;
-
-        self.pc + 2
+        ProgramCounter::Next
       },
       (0x0f, _, 0x00, 0x0a) => {
         self.blocking_key_register = Some(x);
-        self.pc + 2
+        ProgramCounter::Next
       },
       (0x0f, _, 0x01, 0x05) => {
         // Set DT = Vx
         self.reg_dt = self.registers[x];
-
-        self.pc + 2
+        ProgramCounter::Next
       },
       (0x0f, _, 0x01, 0x08) => {
         // Set ST = Vx
         self.reg_st = self.registers[x];
-
-        self.pc + 2
+        ProgramCounter::Next
       },
       (0x0f, _, 0x01, 0x0e) => {
         // Set I = I + Vx
         self.reg_i = self.reg_i + self.registers[x] as usize;
-
-        self.pc + 2
+        ProgramCounter::Next
       },
       (0x0f, _, 0x02, 0x09) => {
         self.reg_i = (self.registers[x]) as usize * 5;
-        self.pc + 2
+        ProgramCounter::Next
       },
       (0x0f, _, 0x03, 0x03) => {
         // BCD stuff
         self.memory[self.reg_i] = self.registers[x] / 100;
         self.memory[self.reg_i + 1] = (self.registers[x] % 100) / 10;
         self.memory[self.reg_i + 2] = self.registers[x] % 10;
-        self.pc + 2
+        ProgramCounter::Next
       },
       (0x0f, _, 0x05, 0x05) => {
         // Store registers V0 through Vx in memory starting at I
         for reg in 0..=x {
           self.memory[self.reg_i + reg] = self.registers[reg];
         }
-        self.pc + 2
+        ProgramCounter::Next
       },
       (0x0f, _, 0x06, 0x05) => {
         // Read registers V0 through Vx from memory starting at I
         for reg in 0..=x {
           self.registers[reg] = self.memory[self.reg_i + reg];
         }
-        self.pc + 2
+        ProgramCounter::Next
       },
       _ => panic!("Unimplemented: {:#06X?}", op)
     };
 
-    self.pc = next_pc;
+    self.pc = pc_step.get_next_pc(self.pc);
   }
 }
 
