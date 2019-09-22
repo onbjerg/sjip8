@@ -393,6 +393,7 @@ fn main() {
     SCREEN_HEIGHT,
     WindowOptions {
       scale: Scale::X8,
+      resize: false,
       ..WindowOptions::default()
     }
   ).unwrap();
