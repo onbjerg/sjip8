@@ -397,7 +397,7 @@ fn main() {
     }
   ).unwrap();
 
-  loop {
+  while window.is_open() {
     // Step emulator
     emu.step();
 
